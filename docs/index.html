@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Cyberpunk Raycaster with Robust Mouse Lock</title>
+  <title>Cyberpunk Raycaster (Full-Screen, Centered, Pointer Lock)</title>
   <style>
-    body { margin:0; overflow:hidden; background:#000; color:#0f0; font:16px monospace; }
+    html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#000; color:#0f0; font:16px monospace; }
     #startScreen, #endScreen {
       position:absolute; top:0; left:0; width:100%; height:100%;
       background:rgba(0,0,0,0.8); display:flex;
@@ -14,9 +14,12 @@
       font-size:16px; padding:6px 12px; margin:8px;
     }
     #notice { margin-top:12px; font-size:14px; color:#f00; }
-    #gameCanvas { display:none; cursor:crosshair; }
-    #ui { position:absolute; top:10px; left:10px; display:none; }
-    #endScreen { display:none; text-align:center; font-size:24px; }
+    #gameCanvas {
+      position:absolute; top:0; left:0;
+      cursor:crosshair;
+    }
+    #ui { position:absolute; top:10px; left:50%; transform:translateX(-50%); display:none; }
+    #endScreen { display:none; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; font-size:24px; }
   </style>
 </head>
 <body>
@@ -27,7 +30,7 @@
     <div id="notice"></div>
     <div style="margin-top:16px; font-size:14px;">Click inside the game area to lock mouse for FPS control</div>
   </div>
-  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <canvas id="gameCanvas"></canvas>
   <div id="ui"></div>
   <div id="endScreen"></div>
   <script>
@@ -37,11 +40,19 @@
     const startScreen = document.getElementById('startScreen');
     const endScreen = document.getElementById('endScreen');
     const notice = document.getElementById('notice');
-    let playerName = '', gameStarted=false, gameOver=false;
+    let playerName = '', gameStarted = false, gameOver = false;
+
+    // Resize canvas to fill viewport
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
 
     document.getElementById('startBtn').addEventListener('click', () => {
       playerName = document.getElementById('nameInput').value || 'Player';
       startScreen.style.display = 'none';
+      resizeCanvas();
       canvas.style.display = 'block';
       ui.style.display = 'block';
       gameStarted = true;
@@ -49,71 +60,70 @@
       loop();
     });
 
-    // Attempt pointer lock, with fallback
+    // Pointer lock + shoot
     canvas.addEventListener('click', () => {
       if (!gameStarted || gameOver) return;
-      try {
-        const locked = canvas.requestPointerLock();
-      } catch (err) {
-        console.warn('Pointer lock request failed:', err);
-        notice.innerText = 'Pointer lock unavailable in this environment.';
-      }
-      // Fire bullet on click
+      // request pointer lock
+      canvas.requestPointerLock?.();
       bullets.push({ x: player.x, y: player.y, angle: player.angle, alive: true });
     });
-
     document.addEventListener('pointerlockerror', () => {
-      notice.innerText = 'Pointer lock was denied by the browser.';
+      notice.innerText = 'Pointer lock denied.';
     });
     document.addEventListener('pointerlockchange', () => {
       if (document.pointerLockElement === canvas) {
         notice.innerText = '';
+      } else if (gameStarted && !gameOver) {
+        notice.innerText = 'Click to lock mouse.';
       }
     });
 
     // Map setup
-    const mapCols=32,mapRows=32,tileSize=64;
-    let map=[];
+    const mapCols=32, mapRows=32, tileSize=64;
+    let map = [];
     for(let y=0;y<mapRows;y++){ map[y]=[]; for(let x=0;x<mapCols;x++){ map[y][x] = (y===0||x===0||y===mapRows-1||x===mapCols-1)?1:(Math.random()<0.1?1:0); }}
     const freeCells=[];
     for(let y=1;y<mapRows-1;y++) for(let x=1;x<mapCols-1;x++) if(map[y][x]===0) freeCells.push({x:x*tileSize+tileSize/2,y:y*tileSize+tileSize/2});
 
     // Player
-    const player={x:tileSize*2,y:tileSize*2,angle:0,speed:2};
-    const fov=Math.PI/3,numRays=200,maxDepth=tileSize*Math.max(mapCols,mapRows);
-    let wallDistances=new Array(numRays);
+    let player = { x: tileSize*2, y: tileSize*2, angle: 0, speed: 2 };
+    const fov=Math.PI/3, numRays=200;
+    let wallDistances = new Array(numRays);
 
     // Enemies
     let enemies=[]; const enemySpeed=1;
-    function spawnEnemy(e){ const c=freeCells[Math.floor(Math.random()*freeCells.length)];e.x=c.x;e.y=c.y;e.alive=true;e.respawnAt=null;e.dir=Math.random()*2*Math.PI;e.killCount=e.killCount||0; }
-    for(let i=0;i<5;i++){ let e={killCount:0};spawnEnemy(e);enemies.push(e); }
-    let kills=0;
-    let compassTarget=null;
+    function spawnEnemy(e){ const c=freeCells[Math.floor(Math.random()*freeCells.length)]; e.x=c.x; e.y=c.y; e.alive=true; e.respawnAt=null; e.dir=Math.random()*2*Math.PI; e.killCount=e.killCount||0; }
+    for(let i=0;i<5;i++){ let e={killCount:0}; spawnEnemy(e); enemies.push(e); }
+    let kills=0, compassTarget=null;
 
-    function updateUI(){ const alive=enemies.filter(e=>e.alive).length; ui.innerText=`Use WASD to move, left-click to shoot | Kills: ${kills} | Enemies Alive: ${alive}/${enemies.length}`; }
+    function updateUI(){ const alive=enemies.filter(e=>e.alive).length; ui.innerText=`Use WASD to move, click to shoot | Kills: ${kills} | Enemies Alive: ${alive}/${enemies.length}`; }
 
     // Input & bullets
     const keys={}, bullets=[]; const bulletSpeed=10;
     document.addEventListener('keydown', e=>keys[e.code]=true);
     document.addEventListener('keyup', e=>keys[e.code]=false);
+
     document.addEventListener('mousemove', e=>{
       if (document.pointerLockElement===canvas) {
         player.angle += e.movementX * 0.002;
       }
     });
 
-    function updateBullets(){ for(let b of bullets){ if(!b.alive) continue; b.x+=Math.cos(b.angle)*bulletSpeed; b.y+=Math.sin(b.angle)*bulletSpeed; const cx=Math.floor(b.x/tileSize), cy=Math.floor(b.y/tileSize); if(map[cy]?.[cx]===1){b.alive=false;continue;} for(let e of enemies) if(e.alive){ const dx=b.x-e.x,dy=b.y-e.y; if(dx*dx+dy*dy<(tileSize/3)**2){ b.alive=false; e.alive=false; e.killCount++; kills++; if(e.killCount<3) e.respawnAt=Date.now()+1000; if(compassTarget===e) compassTarget=null; updateUI(); break; } }} for(let i=bullets.length-1;i>=0;i--) if(!bullets[i].alive) bullets.splice(i,1); }
+    function updateBullets(){ bullets.forEach(b=>{ if(!b.alive) return; b.x+=Math.cos(b.angle)*bulletSpeed; b.y+=Math.sin(b.angle)*bulletSpeed; const cx=Math.floor(b.x/tileSize), cy=Math.floor(b.y/tileSize); if(map[cy]?.[cx]===1){ b.alive=false; return; } enemies.forEach(e=>{ if(e.alive){ const dx=b.x-e.x, dy=b.y-e.y; if(dx*dx+dy*dy<(tileSize/3)**2){ b.alive=false; e.alive=false; e.killCount++; kills++; if(e.killCount<3) e.respawnAt=Date.now()+1000; compassTarget = (compassTarget===e?null:compassTarget); updateUI(); } }}); }); bullets = bullets.filter(b=>b.alive); }
 
-    function updateEnemies(){ for(let e of enemies){ if(!e.alive) continue; const vx=Math.cos(e.dir)*enemySpeed, vy=Math.sin(e.dir)*enemySpeed; const nx=e.x+vx, ny=e.y+vy; const cx=Math.floor(nx/tileSize),cy=Math.floor(ny/tileSize); if(map[cy]?.[cx]===0){e.x=nx;e.y=ny;}else{e.dir=Math.random()*2*Math.PI;} if(Math.random()<0.01) e.dir+=(Math.random()-0.5); }}
-    function handleRespawn(){ const now=Date.now(); for(let e of enemies) if(!e.alive&&e.respawnAt&&now>=e.respawnAt) spawnEnemy(e); }
-    function collidesWithEnemy(x,y){ for(let e of enemies){ if(!e.alive) continue; const dx=x-e.x,dy=y-e.y; if(dx*dx+dy*dy<(tileSize*0.6)**2) return true;} return false; }
+    function updateEnemies(){ enemies.forEach(e=>{ if(!e.alive)return; const vx=Math.cos(e.dir)*enemySpeed, vy=Math.sin(e.dir)*enemySpeed; const nx=e.x+vx, ny=e.y+vy; const cx=Math.floor(nx/tileSize), cy=Math.floor(ny/tileSize); if(map[cy]?.[cx]===0){ e.x=nx; e.y=ny; } else e.dir=Math.random()*2*Math.PI; if(Math.random()<0.01) e.dir+=(Math.random()-0.5); }); }
 
-    function drawGun(){ const cw=canvas.width,ch=canvas.height; ctx.fillStyle='#444'; ctx.fillRect(cw/2-5,ch-80,10,40); ctx.fillRect(cw/2-20,ch-60,40,20); ctx.fillRect(cw/2+10,ch-40,10,20); }
-    function drawCompass(){ if(!compassTarget||!compassTarget.alive){ let nearest=null,md=Infinity; for(let e of enemies) if(e.alive){ const d=Math.hypot(e.x-player.x,e.y-player.y); if(d<md){md=d;nearest=e;}} compassTarget=nearest;} if(!compassTarget) return; let ra=Math.atan2(compassTarget.y-player.y,compassTarget.x-player.x)-player.angle; ra=((ra+Math.PI)%(2*Math.PI))-Math.PI; const cx=canvas.width/2,cy=80,L=40; const ex=cx+Math.sin(ra)*L,ey=cy-Math.cos(ra)*L; ctx.strokeStyle='#0f0';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(ex,ey);ctx.stroke(); ctx.fillStyle='#0f0'; const s=8; const a1=ra+Math.PI-Math.PI/6,a2=ra+Math.PI+Math.PI/6; const x1=ex+Math.sin(a1)*s,y1=ey-Math.cos(a1)*s; const x2=ex+Math.sin(a2)*s,y2=ey-Math.cos(a2)*s; ctx.beginPath();ctx.moveTo(ex,ey);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);ctx.closePath();ctx.fill(); }
+    function handleRespawn(){ const now=Date.now(); enemies.forEach(e=>{ if(!e.alive && e.respawnAt && now>=e.respawnAt) spawnEnemy(e); }); }
 
-    function render3D(){ const hh=canvas.height/2; ctx.fillStyle='#001020';ctx.fillRect(0,0,canvas.width,hh); ctx.fillStyle='#202020';ctx.fillRect(0,hh,canvas.width,hh); const w=canvas.width/numRays; for(let i=0;i<numRays;i++){ const sp=(i-numRays/2)*w; const ra=player.angle+Math.atan(sp/(canvas.width/(2*Math.tan(fov/2)))); let d=0,hit=false; while(!hit&&d<maxDepth){d+=5; const tx=Math.floor((player.x+Math.cos(ra)*d)/tileSize); const ty=Math.floor((player.y+Math.sin(ra)*d)/tileSize); if(map[ty]?.[tx]===1) hit=true;} const cd=d*Math.cos(ra-player.angle); wallDistances[i]=cd; const h=(tileSize*canvas.height)/cd; const shade=Math.max(0,255-cd*0.5); ctx.fillStyle=`rgb(${shade},0,${shade})`; ctx.fillRect(i*w, hh-h/2, w+1, h);} for(let e of enemies) if(e.alive){ const dx=e.x-player.x,dy=e.y-player.y; const d=Math.hypot(dx,dy); const ang=Math.atan2(dy,dx)-player.angle; const projX=Math.tan(ang)*(canvas.width/(2*Math.tan(fov/2))); let sx=canvas.width/2+projX; sx=Math.max(0,Math.min(canvas.width,sx)); const idx=Math.floor(sx/w); if(idx>=0&&idx<numRays&&d<wallDistances[idx]){ const size=(tileSize*canvas.height)/d; ctx.fillStyle='red'; ctx.fillRect(sx-size/2, hh-size/2, size, size);} } for(let b of bullets) if(b.alive){ const dx=b.x-player.x,dy=b.y-player.y; const d=Math.hypot(dx,dy); const ang=Math.atan2(dy,dx)-player.angle; const projX=Math.tan(ang)*(canvas.width/(2*Math.tan(fov/2))); let sx=canvas.width/2+projX; sx=Math.max(0,Math.min(canvas.width,sx)); const idx=Math.floor(sx/w); if(idx>=0&&idx<numRays&&d<wallDistances[idx]){ const size=4; ctx.fillStyle='#fff'; ctx.fillRect(sx-size/2, hh-size/2, size, size);} } drawCompass(); drawGun(); }
+    function collidesWithEnemy(x,y){ return enemies.some(e=> e.alive && ((x-e.x)**2+(y-e.y)**2 < (tileSize*0.6)**2)); }
 
-    function update(){ if(!gameStarted||gameOver) return; let mvX=0,mvY=0; if(keys['KeyW']||keys['ArrowUp']){mvX+=Math.cos(player.angle)*player.speed;mvY+=Math.sin(player.angle)*player.speed;} if(keys['KeyS']||keys['ArrowDown']){mvX-=Math.cos(player.angle)*player.speed;mvY-=Math.sin(player.angle)*player.speed;} if(keys['KeyD']||keys['ArrowRight']){mvX+=Math.cos(player.angle+Math.PI/2)*player.speed;mvY+=Math.sin(player.angle+Math.PI/2)*player.speed;} if(keys['KeyA']||keys['ArrowLeft']){mvX-=Math.cos(player.angle+Math.PI/2)*player.speed;mvY-=Math.sin(player.angle+Math.PI/2)*player.speed;} const nx=player.x+mvX,ny=player.y+mvY; if(map[Math.floor(player.y/tileSize)]?.[Math.floor(nx/tileSize)]===0&&!collidesWithEnemy(nx,player.y))player.x=nx; if(map[Math.floor(ny/tileSize)]?.[Math.floor(player.x/tileSize)]===0&&!collidesWithEnemy(player.x,ny))player.y=ny; updateEnemies();updateBullets();handleRespawn();updateUI();render3D(); if(enemies.every(e=>e.killCount>=3)){gameOver=true;canvas.style.display='none';ui.style.display='none';endScreen.innerText=`Thank you ${playerName} for playing Jon's game`;endScreen.style.display='block';}} function loop(){update();if(!gameOver)requestAnimationFrame(loop);}  
+    function drawGun(){ const cw=canvas.width, ch=canvas.height; ctx.fillStyle='#444'; ctx.fillRect(cw/2-5,ch-80,10,40); ctx.fillRect(cw/2-20,ch-60,40,20); ctx.fillRect(cw/2+10,ch-40,10,20); }
+    function drawCompass(){ if(!compassTarget||!compassTarget.alive){ let nearest=null, md=Infinity; enemies.forEach(e=>{ if(e.alive){ const d=Math.hypot(e.x-player.x,e.y-player.y); if(d<md){md=d;nearest=e;} }}); compassTarget=nearest; } if(!compassTarget) return; let ra=Math.atan2(compassTarget.y-player.y,compassTarget.x-player.x)-player.angle; ra=((ra+Math.PI)%(2*Math.PI))-Math.PI; const cx=canvas.width/2, cy=80, L=40; const ex=cx+Math.sin(ra)*L, ey=cy-Math.cos(ra)*L; ctx.strokeStyle='#0f0'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(ex,ey); ctx.stroke(); ctx.fillStyle='#0f0'; const s=8; const a1=ra+Math.PI-Math.PI/6, a2=ra+Math.PI+Math.PI/6; const x1=ex+Math.sin(a1)*s, y1=ey-Math.cos(a1)*s; const x2=ex+Math.sin(a2)*s, y2=ey-Math.cos(a2)*s; ctx.beginPath(); ctx.moveTo(ex,ey); ctx.lineTo(x1,y1); ctx.lineTo(x2,y2); ctx.closePath(); ctx.fill(); }
+
+    function render3D(){ const hh=canvas.height/2; ctx.fillStyle='#001020'; ctx.fillRect(0,0,canvas.width,hh); ctx.fillStyle='#202020'; ctx.fillRect(0,hh,canvas.width,hh); const w=canvas.width/numRays; for(let i=0;i<numRays;i++){ const sp=(i-numRays/2)*w; const ra=player.angle+Math.atan(sp/(canvas.width/(2*Math.tan(fov/2)))); let d=0,hit=false; while(!hit&&d<maxDepth){ d+=5; const tx=Math.floor((player.x+Math.cos(ra)*d)/tileSize), ty=Math.floor((player.y+Math.sin(ra)*d)/tileSize); if(map[ty]?.[tx]===1) hit=true; } const cd=d*Math.cos(ra-player.angle); wallDistances[i]=cd; const h=(tileSize*canvas.height)/cd; const shade=Math.max(0,255-cd*0.5); ctx.fillStyle=`rgb(${shade},0,${shade})`; ctx.fillRect(i*w, hh-h/2, w+1, h);} enemies.forEach(e=>{ if(!e.alive)return; const dx=e.x-player.x, dy=e.y-player.y; const d=Math.hypot(dx,dy); const ang=Math.atan2(dy,dx)-player.angle; const projX=Math.tan(ang)*(canvas.width/(2*Math.tan(fov/2))); let sx=canvas.width/2+projX; sx=Math.max(0,Math.min(canvas.width,sx)); const idx=Math.floor(sx/w); if(idx>=0&&idx<numRays&&d<wallDistances[idx]){ const size=(tileSize*canvas.height)/d; ctx.fillStyle='red'; ctx.fillRect(sx-size/2, hh-size/2, size, size);} }); bullets.forEach(b=>{ if(!b.alive)return; const dx=b.x-player.x, dy=b.y-player.y; const d=Math.hypot(dx,dy); const ang=Math.atan2(dy,dx)-player.angle; const projX=Math.tan(ang)*(canvas.width/(2*Math.tan(fov/2))); let sx=canvas.width/2+projX; sx=Math.max(0,Math.min(canvas.width,sx)); const idx=Math.floor(sx/w); if(idx>=0&&idx<numRays&&d<wallDistances[idx]){ const size=4; ctx.fillStyle='#fff'; ctx.fillRect(sx-size/2, hh-size/2, size, size);} }); drawCompass(); drawGun(); }
+
+    function update(){ if(!gameStarted||gameOver) return; let mvX=0, mvY=0; if(keys['KeyW']||keys['ArrowUp']){ mvX+=Math.cos(player.angle)*player.speed; mvY+=Math.sin(player.angle)*player.speed;} if(keys['KeyS']||keys['ArrowDown']){ mvX-=Math.cos(player.angle)*player.speed; mvY-=Math.sin(player.angle)*player.speed;} if(keys['KeyD']||keys['ArrowRight']){ mvX+=Math.cos(player.angle+Math.PI/2)*player.speed; mvY+=Math.sin(player.angle+Math.PI/2)*player.speed;} if(keys['KeyA']||keys['ArrowLeft']){ mvX-=Math.cos(player.angle+Math.PI/2)*player.speed; mvY-=Math.sin(player.angle+Math.PI/2)*player.speed;} const nx=player.x+mvX, ny=player.y+mvY; if(map[Math.floor(player.y/tileSize)]?.[Math.floor(nx/tileSize)]===0 && !collidesWithEnemy(nx,player.y)) player.x=nx; if(map[Math.floor(ny/tileSize)]?.[Math.floor(player.x/tileSize)]===0 && !collidesWithEnemy(player.x,ny)) player.y=ny; updateEnemies(); updateBullets(); handleRespawn(); updateUI(); render3D(); if(enemies.every(e=>e.killCount>=3)){ gameOver=true; canvas.style.display='none'; ui.style.display='none'; endScreen.innerText=`Thank you ${playerName} for playing Jon's game`; endScreen.style.display='block'; }}
+    function loop(){ update(); if(!gameOver) requestAnimationFrame(loop); }
   </script>
 </body>
 </html>
