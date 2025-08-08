@@ -99,7 +99,8 @@
     function updateUI(){ const alive=enemies.filter(e=>e.alive).length; ui.innerText=`Use WASD to move, click to shoot | Kills: ${kills} | Enemies Alive: ${alive}/${enemies.length}`; }
 
     // Input & bullets
-    const keys={}, bullets=[]; const bulletSpeed=10;
+    const keys = {};
+    let bullets = []; const bulletSpeed=10;
     document.addEventListener('keydown', e=>keys[e.code]=true);
     document.addEventListener('keyup', e=>keys[e.code]=false);
 
