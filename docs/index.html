@@ -1,241 +1,408 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Cyberpunk Raycaster - Fullscreen FPS</title>
+  <meta charset="UTF-8" />
+  <title>Neon Cyberpunk Raycaster (Big Map + Alien Sprites)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#000; color:#0f0; font-family:monospace; }
-    #startScreen, #endScreen {
-      position:absolute; inset:0;
-      display:flex; flex-direction:column;
-      justify-content:center; align-items:center;
-      background:rgba(0,0,0,0.85);
-      z-index:10;
+    #startScreen, #endWin, #endLose, #pauseScreen {
+      position:absolute; inset:0; display:flex; flex-direction:column;
+      justify-content:center; align-items:center; background:rgba(0,0,0,0.85); z-index:10;
     }
+    #pauseScreen, #endWin, #endLose { display:none; }
     #startScreen input, #startScreen button { font-size:18px; padding:8px 16px; margin:8px; }
-    #notice { color:#f00; margin-top:8px; }
-    #gameCanvas { position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; display:none; }
-    #ui { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:5; font-size:18px; display:none; }
-    #endScreen { position:absolute; inset:0; display:none; justify-content:center; align-items:center; font-size:24px; text-align:center; background:rgba(0,0,0,0.85); z-index:10; }
+    #notice { color:#f55; margin-top:8px; min-height:1.2em; }
+    #gameCanvas { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; display:none; }
+    #hud { position:absolute; left:50%; transform:translateX(-50%); bottom:12px; font-size:16px; background:rgba(0,0,0,0.4); padding:6px 10px; border:1px solid #0f0; border-radius:8px; display:none; }
   </style>
 </head>
 <body>
   <div id="startScreen">
-    <h1>Cyberpunk Raycaster</h1>
+    <h1>Neon Cyberpunk Raycaster</h1>
+    <p>WASD move • Mouse look • E use • Shift run • R reload • Esc pause</p>
     <div>Enter your name:</div>
     <input id="nameInput" type="text" placeholder="Player Name" />
-    <button id="startBtn">Start Game</button>
+    <button id="startBtn">Start</button>
     <div id="notice"></div>
   </div>
+  <div id="pauseScreen"><h2>Paused</h2><p>Press Esc to resume</p></div>
   <canvas id="gameCanvas"></canvas>
-  <div id="ui"></div>
-  <div id="endScreen"></div>
+  <div id="hud"></div>
+  <div id="endWin"></div>
+  <div id="endLose"></div>
 
   <script>
-    // ---------- DOM -----------
+    // ======== DOM ========
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
-    const ui = document.getElementById('ui');
     const startScreen = document.getElementById('startScreen');
-    const endScreen = document.getElementById('endScreen');
+    const pauseScreen = document.getElementById('pauseScreen');
+    const endWin = document.getElementById('endWin');
+    const endLose = document.getElementById('endLose');
+    const hud = document.getElementById('hud');
     const notice = document.getElementById('notice');
 
-    // ---------- Global state -----------
-    let playerName = '', gameStarted=false, gameOver=false;
+    // ======== State ========
+    let playerName = 'Player';
+    let gameStarted=false, gameOver=false, paused=false;
 
-    function resizeCanvas(){ canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
-    window.addEventListener('resize', resizeCanvas);
+    function resize(){ canvas.width=innerWidth; canvas.height=innerHeight; if(gameStarted) recomputeView(); }
+    addEventListener('resize', resize);
 
-    document.getElementById('startBtn').addEventListener('click', () => {
-      playerName = document.getElementById('nameInput').value.trim() || 'Player';
+    document.getElementById('startBtn').addEventListener('click', ()=>{
+      playerName = (document.getElementById('nameInput').value || 'Player').trim();
       startScreen.style.display='none';
-      resizeCanvas(); canvas.style.display='block'; ui.style.display='block';
-      gameStarted=true; initGame(); loop();
+      canvas.style.display='block';
+      hud.style.display='block';
+      resize();
+      initGame();
+      loop();
     });
 
-    // Pointer lock + shoot
-    canvas.addEventListener('click', () => {
+    // ======== Pointer lock ========
+    canvas.addEventListener('click', ()=>{
       if(!gameStarted||gameOver) return;
-      canvas.requestPointerLock?.();
-      bullets.push({ x:player.x, y:player.y, angle:player.angle, alive:true });
+      try { canvas.requestPointerLock && canvas.requestPointerLock(); } catch {}
+      fireWeapon();
     });
-    document.addEventListener('pointerlockerror', ()=>{ notice.textContent='Pointer lock denied. Click to retry.'; });
+    document.addEventListener('pointerlockerror', ()=> notice.textContent='Pointer lock denied. Click to retry.');
     document.addEventListener('pointerlockchange', ()=>{ if(document.pointerLockElement===canvas) notice.textContent=''; });
 
-    // ---------- World / entities -----------
-    const mapCols=32, mapRows=32, tileSize=64;
-    let map=[], freeCells=[];
-    let player, numRays, maxDepth, wallDistances, projPlane;
-    const fov=Math.PI/3;
-    let enemies=[], bullets=[], kills=0;
-    const enemySpeed=1, bulletSpeed=10;
+    // ======== BIG Level (ASCII) ========
+    // 24 rows x 64 cols (bordered). #/A/B/C walls, . floor, P player, E grunt, D drone, T turret, + medkit, * ammo, X exit.
+    const level = [
+      '################################################################',
+      '#..A......*......E.............B...........+..............D...#',
+      '#..####...............####.............####.............#####..#',
+      '#..#..#....+......E...#..#.....*.......#..#.....T............#.#',
+      '#..#..#..............##..#.............#..#..............*...#.#',
+      '#..#..##########...........#######...........##########......#.#',
+      '#..#.............C.....E...........C.....E.............C.....#.#',
+      '#..#....#######...........#######...........#######...........#.#',
+      '#..#....#.....#....*...........#....+...........#....*.......#.#',
+      '#..#....#..T..#........D.......#..............T.#............#.#',
+      '#..#....#.....#...............X#................#......+.....#.#',
+      '#..#....#######...........#######...........#######...........#.#',
+      '#..#................B................B.......................#.#',
+      '#..############.............###########.............##########.#',
+      '#..#..........#.....+......#.........#.....*......#..........#.#',
+      '#..#..E.......#............#....E....#............#....E.....#.#',
+      '#..#..........#............#.........#............#..........#.#',
+      '#..###############....###############....#####################.#',
+      '#................#....#.............#....#....................#.#',
+      '#..*.............#....#..D......+..#....#....*................#.#',
+      '#................#....#.............#....#....................#.#',
+      '#...........C................C...............C...............*#.#',
+      '#..P.............................E.........................T...#',
+      '################################################################'
+    ];
 
-    function initGame(){
-      // Build map with solid border
-      map = Array.from({length:mapRows}, (_,y)=> Array.from({length:mapCols}, (_,x)=>
-        (y===0||x===0||y===mapRows-1||x===mapCols-1) ? 1 : (Math.random()<0.10 ? 1 : 0)
-      ));
-      // Gather free cells
-      freeCells = [];
-      for(let y=1;y<mapRows-1;y++) for(let x=1;x<mapCols-1;x++) if(map[y][x]===0)
-        freeCells.push({ x:x*tileSize+tileSize/2, y:y*tileSize+tileSize/2 });
+    // ======== World setup ========
+    const tileSize=64;
+    const mapRows=level.length, mapCols=level[0].length;
+    const map = Array.from({length:mapRows}, ()=> Array(mapCols).fill(0));
+    const exitSwitch = {x:null, y:null, used:false};
+    const spawns = { grunt:[], drone:[], turret:[] };
+    const items = []; // {x,y,type:'med'|'ammo',taken:false}
 
-      // Player & view
-      player = { x: tileSize*2, y: tileSize*2, angle:0, speed:2 };
-      numRays = Math.ceil(canvas.width/2);
-      wallDistances = new Array(numRays);
-      maxDepth = tileSize * Math.max(mapCols, mapRows);
-      projPlane = canvas.width/(2*Math.tan(fov/2));
-
-      // Enemies
-      enemies = Array.from({length:5}, ()=>({x:0,y:0,dir:0,alive:true,killCount:0,respawnAt:null}));
-      enemies.forEach(spawnEnemy);
-
-      // Bullets / score
-      bullets = []; kills = 0;
-      updateUI();
-    }
-
-    function spawnEnemy(e){
-      const c = freeCells[Math.floor(Math.random()*freeCells.length)];
-      Object.assign(e, { x:c.x, y:c.y, dir:Math.random()*2*Math.PI, alive:true });
-    }
-
-    function updateUI(){
-      const alive=enemies.filter(e=>e.alive).length;
-      ui.textContent = `Use WASD to move, click to shoot | Kills: ${kills} | Enemies Alive: ${alive}/${enemies.length} | Bullets: ${bullets.length}`;
-    }
-
-    // ---------- Input -----------
+    // Player & view
+    const fov = Math.PI/3;
+    let projPlane=1, numRays=1, maxDepth=tileSize*Math.max(mapCols,mapRows);
     const keys={};
-    document.addEventListener('keydown', e=>keys[e.code]=true);
-    document.addEventListener('keyup', e=>keys[e.code]=false);
-    document.addEventListener('mousemove', e=>{ if(document.pointerLockElement===canvas) player.angle += e.movementX*0.002; });
+    let player={ x:tileSize*2, y:tileSize*2, angle:0, speed:2.2, hp:120, ammo:90, mag:12, magSize:12, reloadTime:650, reloading:false, lastHitTime:-1e9, hitCooldownMs:350, spawnGraceMs:1200 };
+    let levelStartTime = 0;
 
-    // ---------- Game updates -----------
-    function updatePlayer(){
-      let dx=0,dy=0;
-      if(keys['KeyW']){ dx+=Math.cos(player.angle)*player.speed; dy+=Math.sin(player.angle)*player.speed; }
-      if(keys['KeyS']){ dx-=Math.cos(player.angle)*player.speed; dy-=Math.sin(player.angle)*player.speed; }
-      if(keys['KeyA']){ dx+=Math.cos(player.angle-Math.PI/2)*player.speed; dy+=Math.sin(player.angle-Math.PI/2)*player.speed; }
-      if(keys['KeyD']){ dx+=Math.cos(player.angle+Math.PI/2)*player.speed; dy+=Math.sin(player.angle+Math.PI/2)*player.speed; }
-      const nx=player.x+dx, ny=player.y+dy;
-      if(!map[Math.floor(player.y/tileSize)]?.[Math.floor(nx/tileSize)]) player.x=nx;
-      if(!map[Math.floor(ny/tileSize)]?.[Math.floor(player.x/tileSize)]) player.y=ny;
-    }
+    // Enemies
+    const enemies=[]; // {type, state, hp, x,y,dir,atkCd, sprite, frame}
 
-    function updateEnemies(){
-      enemies.forEach(e=>{
-        if(!e.alive) return;
-        const vx=Math.cos(e.dir)*enemySpeed, vy=Math.sin(e.dir)*enemySpeed;
-        const nx=e.x+vx, ny=e.y+vy;
-        const cx=Math.floor(nx/tileSize), cy=Math.floor(ny/tileSize);
-        if(!map[cy]?.[cx]){ e.x=nx; e.y=ny; } else { e.dir=Math.random()*2*Math.PI; }
-        if(Math.random()<0.01) e.dir += (Math.random()-0.5);
-      });
-    }
+    // Visual fx
+    let muzzleTimer=0; // frames
+    let tracers=[]; // {x1,y1,x2,y2,t}
 
-    function handleRespawn(){
-      const now=Date.now();
-      enemies.forEach(e=>{ if(!e.alive && e.respawnAt && now>=e.respawnAt) spawnEnemy(e); });
-    }
+    // Sprites
+    const alienSprites = { grunt:[], drone:[], turret:[] };
 
-    function updateBullets(){
-      bullets.forEach(b=>{
-        if(!b.alive) return;
-        b.x += Math.cos(b.angle)*bulletSpeed;
-        b.y += Math.sin(b.angle)*bulletSpeed;
-        const cx=Math.floor(b.x/tileSize), cy=Math.floor(b.y/tileSize);
-        if(map[cy]?.[cx]){ b.alive=false; return; }
-        enemies.forEach(e=>{
-          if(e.alive && ((b.x-e.x)**2+(b.y-e.y)**2) < (tileSize/4)**2){
-            b.alive=false; e.alive=false; e.killCount++; kills++;
-            if(e.killCount<3) e.respawnAt=Date.now()+1500;
-          }
-        });
-      });
-      bullets = bullets.filter(b=>b.alive);
-    }
-
-    // ---------- Rendering -----------
-    const MIN_WALL_SHADE = 80; // keep walls visible
-
-    function drawWalls(){
-      const w = canvas.width/numRays;
-      const halfH = canvas.height/2;
-      // sky/floor
-      ctx.fillStyle='#00132a'; ctx.fillRect(0,0,canvas.width,halfH);
-      ctx.fillStyle='#3c3c3c'; ctx.fillRect(0,halfH,canvas.width,halfH);
-
-      for(let i=0;i<numRays;i++){
-        const rayScreen = (i-numRays/2)*w;
-        const rayAngle = player.angle + Math.atan(rayScreen/projPlane);
-        let dist=0; let hit=false;
-        while(!hit && dist<maxDepth){
-          dist += 5;
-          const tx=Math.floor((player.x+Math.cos(rayAngle)*dist)/tileSize);
-          const ty=Math.floor((player.y+Math.sin(rayAngle)*dist)/tileSize);
-          if(map[ty]?.[tx]) hit=true;
+    // ======== Build map & parse level ========
+    function parseLevel(){
+      for(let y=0;y<mapRows;y++){
+        for(let x=0;x<mapCols;x++){
+          const ch = level[y][x];
+          if(ch==='#') map[y][x] = 1;
+          else if(ch==='A') map[y][x] = 2;
+          else if(ch==='B') map[y][x] = 3;
+          else if(ch==='C') map[y][x] = 4;
+          else if(ch==='P'){ player.x=x*tileSize+tileSize/2; player.y=y*tileSize+tileSize/2; }
+          else if(ch==='E'){ spawns.grunt.push({x,y}); }
+          else if(ch==='D'){ spawns.drone.push({x,y}); }
+          else if(ch==='T'){ spawns.turret.push({x,y}); }
+          else if(ch==='+'){ items.push({x,y,type:'med',taken:false}); }
+          else if(ch==='*'){ items.push({x,y,type:'ammo',taken:false}); }
+          else if(ch==='X'){ exitSwitch.x=x; exitSwitch.y=y; }
         }
-        const corrected = dist * Math.cos(rayAngle-player.angle);
-        wallDistances[i] = corrected;
-        const height = (tileSize*canvas.height)/corrected;
-        const shade = Math.max(MIN_WALL_SHADE, 255-corrected*0.3)|0;
-        ctx.fillStyle = `rgb(${shade},0,${shade})`;
-        ctx.fillRect(i*w, halfH-height/2, w+1, height);
       }
     }
 
-    function drawSprites(){
-      const w = canvas.width/numRays;
-      const halfH = canvas.height/2;
-      // Enemies (always on top of walls if closer than wall)
+    // ======== Textures (procedural neon) ========
+    const textures = []; // index 1..4 used
+    function makeTexture(fn){ const c=document.createElement('canvas'); c.width=c.height=64; const g=c.getContext('2d'); fn(g,c); return c; }
+    function buildTextures(){
+      textures[1]=makeTexture((g,c)=>{ g.fillStyle='#180018'; g.fillRect(0,0,64,64); g.fillStyle='#ff00ff'; for(let y=0;y<64;y+=16){ for(let x=0;x<64;x+=16){ g.globalAlpha=0.25; g.fillRect(x,y,16,16); g.globalAlpha=1; g.fillRect(x,y+15,16,1); g.fillRect(x+15,y,1,16);} } });
+      textures[2]=makeTexture((g,c)=>{ g.fillStyle='#001818'; g.fillRect(0,0,64,64); g.fillStyle='#00ffff'; for(let x=0;x<64;x+=8){ g.globalAlpha=0.35; g.fillRect(x,0,4,64);} g.globalAlpha=1; });
+      textures[3]=makeTexture((g,c)=>{ g.fillStyle='#120012'; g.fillRect(0,0,64,64); g.strokeStyle='#a000ff'; g.globalAlpha=0.5; for(let i=0;i<=64;i+=8){ g.beginPath(); g.moveTo(i,0); g.lineTo(i,64); g.stroke(); g.beginPath(); g.moveTo(0,i); g.lineTo(64,i); g.stroke(); } g.globalAlpha=1; });
+      textures[4]=makeTexture((g,c)=>{ g.fillStyle='#101010'; g.fillRect(0,0,64,64); g.fillStyle='#0f0'; g.globalAlpha=.2; g.fillRect(0,0,64,64); g.globalAlpha=1; });
+    }
+
+    // ======== Alien sprite art (procedural) ========
+    function makeSprite(w,h,draw){ const c=document.createElement('canvas'); c.width=w; c.height=h; const g=c.getContext('2d'); g.clearRect(0,0,w,h); draw(g,w,h); return c; }
+    function buildAlienSprites(){
+      // GRUNT: green biopunk alien
+      const grunt1 = makeSprite(48,48,(g,w,h)=>{
+        g.fillStyle='rgba(0,255,120,0.2)'; g.fillRect(0,0,w,h);
+        g.fillStyle='#00ff88'; g.beginPath(); g.ellipse(w/2,h*0.55,w*0.35,h*0.42,0,0,Math.PI*2); g.fill();
+        g.fillStyle='#003322'; g.beginPath(); g.ellipse(w/2,h*0.25,w*0.25,h*0.2,0,0,Math.PI*2); g.fill();
+        g.fillStyle='#ffffff'; g.beginPath(); g.ellipse(w*0.42,h*0.23,6,8,0,0,Math.PI*2); g.fill(); g.beginPath(); g.ellipse(w*0.58,h*0.23,6,8,0,0,Math.PI*2); g.fill();
+        g.fillStyle='#00ffaa'; g.fillRect(w*0.45,h*0.62,6,14);
+      });
+      const grunt2 = makeSprite(48,48,(g,w,h)=>{
+        g.fillStyle='rgba(0,255,160,0.2)'; g.fillRect(0,0,w,h);
+        g.fillStyle='#00ffcc'; g.beginPath(); g.ellipse(w/2,h*0.55,w*0.33,h*0.40,0,0,Math.PI*2); g.fill();
+        g.fillStyle='#002822'; g.beginPath(); g.ellipse(w/2,h*0.25,w*0.24,h*0.18,0,0,Math.PI*2); g.fill();
+        g.fillStyle='#ffffff'; g.fillRect(w*0.38,h*0.22,6,6); g.fillRect(w*0.56,h*0.22,6,6);
+        g.fillStyle='#00ffaa'; g.fillRect(w*0.49,h*0.62,6,14);
+      });
+      alienSprites.grunt=[grunt1,grunt2];
+      // DRONE: cyan hovercraft
+      const drone1 = makeSprite(48,48,(g,w,h)=>{
+        g.fillStyle='rgba(0,255,255,0.15)'; g.fillRect(0,0,w,h);
+        g.fillStyle='#00e0ff'; g.beginPath(); g.ellipse(w/2,h*0.55,w*0.35,h*0.18,0,0,Math.PI*2); g.fill();
+        g.fillStyle='#00ffff'; g.fillRect(w*0.25,h*0.42,w*0.5,6);
+        g.fillStyle='#003a44'; g.fillRect(w*0.2,h*0.65,w*0.6,4);
+      });
+      const drone2 = makeSprite(48,48,(g,w,h)=>{
+        g.fillStyle='rgba(0,255,255,0.15)'; g.fillRect(0,0,w,h);
+        g.fillStyle='#00d0ff'; g.beginPath(); g.ellipse(w/2,h*0.56,w*0.37,h*0.17,0,0,Math.PI*2); g.fill();
+        g.fillStyle='#00ffff'; g.fillRect(w*0.23,h*0.43,w*0.54,6);
+        g.fillStyle='#004a55'; g.fillRect(w*0.2,h*0.66,w*0.6,4);
+      });
+      alienSprites.drone=[drone1,drone2];
+      // TURRET: magenta tripod
+      const turret1 = makeSprite(48,48,(g,w,h)=>{
+        g.fillStyle='rgba(255,0,255,0.12)'; g.fillRect(0,0,w,h);
+        g.fillStyle='#ff00ff'; g.fillRect(w*0.44,h*0.28,8,18);
+        g.fillRect(w*0.34,h*0.46,6,10); g.fillRect(w*0.60,h*0.46,6,10);
+        g.fillStyle='#a000ff'; g.fillRect(w*0.30,h*0.24,24,6);
+      });
+      const turret2 = makeSprite(48,48,(g,w,h)=>{
+        g.fillStyle='rgba(255,0,255,0.12)'; g.fillRect(0,0,w,h);
+        g.fillStyle='#ff40ff'; g.fillRect(w*0.44,h*0.28,8,18);
+        g.fillRect(w*0.32,h*0.46,6,10); g.fillRect(w*0.62,h*0.46,6,10);
+        g.fillStyle='#9800ff'; g.fillRect(w*0.30,h*0.24,24,6);
+      });
+      alienSprites.turret=[turret1,turret2];
+    }
+
+    // ======== Init ========
+    function initGame(){
+      parseLevel();
+      buildTextures();
+      buildAlienSprites();
+      recomputeView();
+      spawnFromSpawns();
+      gameStarted=true; gameOver=false; paused=false; muzzleTimer=0; tracers=[];
+      hud.textContent = '';
+      levelStartTime = performance.now();
+      player.lastHitTime = -1e9;
+      selfTests();
+    }
+
+    function recomputeView(){
+      numRays = Math.max(160, Math.floor(canvas.width/2));
+      projPlane = canvas.width / (2*Math.tan(fov/2));
+      maxDepth = tileSize*Math.max(mapCols,mapRows);
+      depthBuf = new Array(numRays).fill(1e9);
+    }
+
+    function spawnFromSpawns(){
+      enemies.length = 0;
+      spawns.grunt.forEach(s=> enemies.push(makeEnemy('grunt', s.x, s.y)) );
+      spawns.drone.forEach(s=> enemies.push(makeEnemy('drone', s.x, s.y)) );
+      spawns.turret.forEach(s=> enemies.push(makeEnemy('turret', s.x, s.y)) );
+    }
+
+    function makeEnemy(type, gx, gy){
+      const e={ type, state:type==='turret'?'idle':'patrol', hp:type==='turret'?90:60, x:gx*tileSize+tileSize/2, y:gy*tileSize+tileSize/2, dir:Math.random()*Math.PI*2, atkCd:0, frame:0 };
+      return e;
+    }
+
+    // ======== Input ========
+    addEventListener('keydown', e=>{
+      keys[e.code]=true;
+      if(e.code==='Escape' && gameStarted && !gameOver){ paused=!paused; pauseScreen.style.display=paused?'flex':'none'; }
+      if(e.code==='KeyE') tryUse();
+      if(e.code==='KeyR') beginReload();
+    });
+    addEventListener('keyup', e=> keys[e.code]=false);
+    addEventListener('mousemove', e=>{ if(document.pointerLockElement===canvas){ player.angle += e.movementX*0.002; } });
+
+    // ======== Player actions ========
+    function fireWeapon(){
+      if(player.reloading || gameOver) return;
+      if(player.mag<=0){ beginReload(); return; }
+      player.mag--; muzzleTimer=5;
+      const res = castRay(player.x, player.y, player.angle, maxDepth);
+      tracers.push({x1:player.x,y1:player.y,x2:res.hitX,y2:res.hitY,t:60});
+      let hitEnemy=null, minDist=1e9;
       enemies.forEach(e=>{
-        if(!e.alive) return;
-        const dx=e.x-player.x, dy=e.y-player.y;
-        const dist=Math.hypot(dx,dy);
-        const ang=Math.atan2(dy,dx)-player.angle;
-        const proj = Math.tan(ang)*projPlane;
-        const sx = canvas.width/2 + proj;
-        const col = Math.floor(sx/w);
-        if(col>=0 && col<numRays && dist < wallDistances[col] + 2){
-          const size = (tileSize*canvas.height)/dist;
-          ctx.fillStyle='red';
-          ctx.fillRect(sx-size/2, halfH-size/2, size, size);
-        }
+        if(e.state==='dead') return;
+        const dx=e.x-player.x, dy=e.y-player.y; const ang=Math.atan2(dy,dx);
+        let da = normalizeAngle(ang - player.angle); if(Math.abs(da) > fov/2) return;
+        if(!lineOfSight(player.x,player.y,e.x,e.y).visible) return;
+        const dist = Math.hypot(dx,dy); if(dist < minDist){ minDist=dist; hitEnemy=e; }
       });
-      // Bullets
-      bullets.forEach(b=>{
-        const dx=b.x-player.x, dy=b.y-player.y;
-        const dist=Math.hypot(dx,dy);
-        const ang=Math.atan2(dy,dx)-player.angle;
-        const proj=Math.tan(ang)*projPlane;
-        const sx=canvas.width/2+proj;
-        const col=Math.floor(sx/w);
-        if(col>=0 && col<numRays && dist < wallDistances[col] + 2){
-          ctx.fillStyle='#fff'; ctx.fillRect(sx-2, halfH-2, 4, 4);
-        }
-      });
-      // Gun overlay (always on-screen)
-      const gw=10, gh=42;
-      ctx.fillStyle='#444';
-      ctx.fillRect(canvas.width/2-gw/2, canvas.height-gh-14, gw, gh);
-      ctx.fillRect(canvas.width/2-gw-12, canvas.height-gh/2-14, gw*2+4, gh/2);
+      if(hitEnemy){ hitEnemy.hp -= 50; if(hitEnemy.hp<=0){ hitEnemy.state='dead'; }}
     }
 
-    function drawFrame(){
-      drawWalls();
-      drawSprites();
+    function beginReload(){ if(player.reloading) return; if(player.ammo<=0 || player.mag===player.magSize) return; player.reloading=true; setTimeout(()=>{ const need=player.magSize-player.mag; const take=Math.min(need, player.ammo); player.mag+=take; player.ammo-=take; player.reloading=false; }, player.reloadTime); }
+
+    function tryUse(){
+      const tx=Math.floor(player.x/tileSize), ty=Math.floor(player.y/tileSize);
+      if(exitSwitch.x===tx && exitSwitch.y===ty && !exitSwitch.used){ exitSwitch.used=true; endGameWin(); }
+      items.forEach(it=>{
+        if(it.taken) return; const cx=it.x*tileSize+tileSize/2, cy=it.y*tileSize+tileSize/2; if(Math.hypot(cx-player.x, cy-player.y)<32){
+          it.taken=true; if(it.type==='med') player.hp=Math.min(120, player.hp+35); else if(it.type==='ammo') player.ammo+=36;
+        }
+      });
     }
 
-    // ---------- Main loop -----------
-    function loop(){
-      updatePlayer(); updateEnemies(); updateBullets(); handleRespawn(); updateUI();
-      drawFrame();
-      if(!gameOver && enemies.every(e=>e.killCount>=3)){
-        gameOver=true; endScreen.textContent=`Thank you ${playerName} for playing Jon's game`; endScreen.style.display='flex';
-      } else if(!gameOver) requestAnimationFrame(loop);
+    function endGameWin(){
+      gameOver=true; hud.style.display='none';
+      endWin.style.display='flex'; endLose.style.display='none';
+      endWin.innerText = `WINNER!\nThanks, ${playerName}, for playing Jon's game.\nKills: ${enemies.filter(e=>e.state==='dead').length}/${enemies.length}\nHP: ${player.hp}  Ammo: ${player.ammo}\n(Refresh the page to play again)`;
     }
+    function endGameLose(){
+      gameOver=true; hud.style.display='none';
+      endWin.style.display='none'; endLose.style.display='flex';
+      endLose.innerText = `You died.\nThank you ${playerName} for playing Jon's game.\n(Refresh the page to try again)`;
+    }
+
+    // ======== Helpers ========
+    function isAlive(e){ return e.state!=='dead'; }
+    function normalizeAngle(a){ a=(a+Math.PI)%(2*Math.PI)-Math.PI; return a; }
+    function tileAt(x,y){ const cx=Math.floor(x/tileSize), cy=Math.floor(y/tileSize); return (map[cy]&&map[cy][cx])||0; }
+    function castRay(x,y,angle,limit){ let dist=0, hit=0, hx=x, hy=y; while(dist<limit){ dist+=4; const nx=x+Math.cos(angle)*dist, ny=y+Math.sin(angle)*dist; if(tileAt(nx,ny)){ hit=tileAt(nx,ny); hx=nx; hy=ny; break; } hx=nx; hy=ny; } return {dist, hit, hitX:hx, hitY:hy}; }
+    function lineOfSight(x1,y1,x2,y2){ const dx=x2-x1, dy=y2-y1; const steps=Math.ceil(Math.hypot(dx,dy)/8); for(let i=1;i<=steps;i++){ const nx=x1+dx*i/steps, ny=y1+dy*i/steps; if(tileAt(nx,ny)) return {visible:false}; } return {visible:true}; }
+
+    // ======== Enemy AI & Shooting ========
+    function updateEnemies(dt){
+      enemies.forEach(e=>{
+        if(!isAlive(e)) return;
+        e.frame = (e.frame + dt*0.006)|0; // animate frames
+        if(e.type==='turret'){
+          e.dir = Math.atan2(player.y-e.y, player.x-e.x);
+          e.atkCd = Math.max(0, e.atkCd-dt);
+          if(e.atkCd<=0 && lineOfSight(e.x,e.y,player.x,player.y).visible){ enemyShoot(e); e.atkCd=1600; } // slower turret fire
+          return;
+        }
+        const sees = lineOfSight(e.x,e.y,player.x,player.y).visible && Math.hypot(e.x-player.x, e.y-player.y) < 700;
+        if(sees){ e.state='chase'; e.dir=Math.atan2(player.y-e.y, player.x-e.x); }
+        else if(e.state!=='patrol'){ e.state='patrol'; }
+        if(e.state==='patrol'){ if(Math.random()<0.01) e.dir += (Math.random()-0.5); moveEnemy(e, 0.75); }
+        if(e.state==='chase'){ moveEnemy(e, (e.type==='drone'?1.05:0.95)); }
+        e.atkCd = Math.max(0, e.atkCd-dt);
+        if(sees && e.atkCd<=0){ enemyShoot(e); e.atkCd= (e.type==='drone'?1400:1200); } // slower, fairer
+      });
+    }
+
+    function moveEnemy(e, spd){ const vx=Math.cos(e.dir)*spd, vy=Math.sin(e.dir)*spd; const nx=e.x+vx, ny=e.y+vy; if(!tileAt(nx, e.y)) e.x=nx; else e.dir += (Math.random()-0.5); if(!tileAt(e.x, ny)) e.y=ny; else e.dir += (Math.random()-0.5); }
+
+    function enemyShoot(e){
+      const distToPlayer = Math.hypot(player.x-e.x, player.y-e.y);
+      // increase spread with distance to reduce accuracy (helps survivability)
+      const spreadBase = 0.22; // radians
+      const spreadByDist = Math.min(0.35, distToPlayer/1200);
+      const ang = Math.atan2(player.y-e.y, player.x-e.x) + (Math.random()-0.5)*(spreadBase+spreadByDist);
+      const res = castRay(e.x, e.y, ang, maxDepth);
+      tracers.push({x1:e.x,y1:e.y,x2:res.hitX,y2:res.hitY,t:50});
+
+      // Damage application with i-frames & start grace
+      const now = performance.now();
+      if (now < levelStartTime + player.spawnGraceMs) return; // grace after spawn
+      if (now - player.lastHitTime < player.hitCooldownMs) return; // brief invulnerability window
+      if (lineOfSight(e.x,e.y,player.x,player.y).visible) {
+        const dmg = (e.type==='drone'?4 : e.type==='turret'?8 : 6); // toned down damage
+        player.hp -= dmg;
+        player.lastHitTime = now;
+        if(player.hp<=0) endGameLose();
+      }
+    }
+
+    // ======== Player update ========
+    function updatePlayer(dt){
+      let sp = (keys['ShiftLeft']||keys['ShiftRight'])? 3.2 : 2.2;
+      let dx=0, dy=0;
+      if(keys['KeyW']){ dx+=Math.cos(player.angle)*sp; dy+=Math.sin(player.angle)*sp; }
+      if(keys['KeyS']){ dx-=Math.cos(player.angle)*sp; dy-=Math.sin(player.angle)*sp; }
+      if(keys['KeyA']){ dx+=Math.cos(player.angle-Math.PI/2)*sp; dy+=Math.sin(player.angle-Math.PI/2)*sp; }
+      if(keys['KeyD']){ dx+=Math.cos(player.angle+Math.PI/2)*sp; dy+=Math.sin(player.angle+Math.PI/2)*sp; }
+      if(!document.pointerLockElement){ if(keys['ArrowLeft']) player.angle-=0.05; if(keys['ArrowRight']) player.angle+=0.05; }
+      const nx=player.x+dx, ny=player.y+dy; if(!tileAt(nx, player.y)) player.x=nx; if(!tileAt(player.x, ny)) player.y=ny;
+      if(muzzleTimer>0) muzzleTimer--; for(let i=tracers.length-1;i>=0;i--){ tracers[i].t-=16; if(tracers[i].t<=0) tracers.splice(i,1); }
+    }
+
+    // ======== Rendering ========
+    let depthBuf = [];
+    function drawScene(){
+      const halfH = canvas.height/2; ctx.fillStyle='#00132a'; ctx.fillRect(0,0,canvas.width,halfH); ctx.fillStyle='#2c2c2c'; ctx.fillRect(0,halfH,canvas.width,halfH);
+      const w = canvas.width/numRays;
+      for(let i=0;i<numRays;i++){
+        const rayScreen=(i-numRays/2)*w; const rayAngle=player.angle + Math.atan(rayScreen/projPlane);
+        let d=0, hit=0, hx=player.x, hy=player.y;
+        while(d<maxDepth){ d+=4; hx=player.x+Math.cos(rayAngle)*d; hy=player.y+Math.sin(rayAngle)*d; if(hit=tileAt(hx,hy)) break; }
+        const corrected=d*Math.cos(rayAngle-player.angle); depthBuf[i]=corrected;
+        const tex = textures[hit] || textures[1];
+        const tx = Math.floor(((hitEdgeCoord(hx,hy,rayAngle)%tileSize)/tileSize) * 64) | 0;
+        const h = (tileSize*canvas.height)/Math.max(1,corrected); const top = halfH - h/2;
+        try{ ctx.drawImage(tex, tx, 0, 1, 64, i*w|0, top|0, (w+1)|0, h|0); }catch{ ctx.fillStyle='rgb(200,0,200)'; ctx.fillRect(i*w, top, w+1, h); }
+      }
+      // sprites: enemies
+      enemies.forEach(e=>{ if(!isAlive(e)) return; const frames = alienSprites[e.type]||[]; const img = frames.length? frames[(e.frame>>1)%frames.length] : null; drawBillboardSprite(e.x, e.y, img, tileSize*0.95); });
+      // pickups
+      items.forEach(it=>{ if(it.taken) return; const cx=it.x*tileSize+tileSize/2, cy=it.y*tileSize+tileSize/2; drawBillboardRect(cx, cy, it.type==='med'?'#00ff66':'#ffff00', tileSize*0.55); });
+      // exit switch indicator
+      if(exitSwitch.x!=null){ const cx=exitSwitch.x*tileSize+tileSize/2, cy=exitSwitch.y*tileSize+tileSize/2; drawBillboardRect(cx, cy, '#00bfff', tileSize*0.65); }
+      // tracers (screen-space cheap)
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.globalAlpha=0.8; tracers.forEach(tr=>{ const sx1 = worldToScreenX(tr.x1,tr.y1), sx2=worldToScreenX(tr.x2,tr.y2); const y = canvas.height/2; ctx.beginPath(); ctx.moveTo(sx1, y); ctx.lineTo(sx2, y); ctx.stroke(); }); ctx.globalAlpha=1;
+      // gun overlay
+      drawGun();
+      // HUD
+      hud.textContent = `HP:${player.hp}  AMMO:${player.mag}/${player.ammo}  Enemies:${enemies.filter(isAlive).length}`;
+    }
+
+    function hitEdgeCoord(hx,hy,ra){ const fx = hx % tileSize, fy = hy % tileSize; return (Math.abs(Math.sin(ra)) > Math.abs(Math.cos(ra))) ? fx : fy; }
+    function worldToScreenX(x,y){ const dx=x-player.x, dy=y-player.y; const ang = normalizeAngle(Math.atan2(dy,dx)-player.angle); const proj = Math.tan(ang)*projPlane; return canvas.width/2 + proj; }
+
+    function drawBillboardRect(x,y,color,size){ const dx=x-player.x, dy=y-player.y; const dist=Math.hypot(dx,dy); const ang = normalizeAngle(Math.atan2(dy,dx)-player.angle); if(Math.abs(ang)>fov/1.6) return; const sx = canvas.width/2 + Math.tan(ang)*projPlane; const col = Math.floor((sx/(canvas.width/numRays))|0); if(col<0||col>=numRays) return; if(dist>depthBuf[col]) return; const h=(size*canvas.height)/Math.max(1,dist); const top=canvas.height/2 - h/2; ctx.fillStyle = color; ctx.fillRect(sx-h/2, top, h, h); }
+    function drawBillboardSprite(x,y,img,size){ const dx=x-player.x, dy=y-player.y; const dist=Math.hypot(dx,dy); const ang = normalizeAngle(Math.atan2(dy,dx)-player.angle); if(Math.abs(ang)>fov/1.6) return; const sx = canvas.width/2 + Math.tan(ang)*projPlane; const col = Math.floor((sx/(canvas.width/numRays))|0); if(col<0||col>=numRays) return; if(dist>depthBuf[col]) return; const h=(size*canvas.height)/Math.max(1,dist); const top=canvas.height/2 - h/2; if(img){ ctx.drawImage(img, sx-h/2, top, h, h); } else { ctx.fillStyle='#ff3030'; ctx.fillRect(sx-h/2, top, h, h); } }
+
+    function drawGun(){ const cw=canvas.width, ch=canvas.height; const baseY = ch - 12; if(muzzleTimer>0){ ctx.fillStyle='rgba(255,255,180,0.8)'; ctx.fillRect(cw/2-18, baseY-122, 36, 42); } ctx.fillStyle='#222'; ctx.fillRect(cw/2-6, baseY-80, 12, 60); ctx.fillRect(cw/2-34, baseY-40, 68, 18); ctx.fillStyle='#555'; ctx.fillRect(cw/2-8, baseY-30, 16, 30); }
+
+    // ======== Main loop ========
+    let last=performance.now();
+    function loop(){ if(!gameStarted || gameOver){ return; } const now=performance.now(); const dt=now-last; last=now; if(!paused){ updatePlayer(dt); updateEnemies(dt); drawScene(); if(player.hp<=0) endGameLose(); } requestAnimationFrame(loop); }
+
+    // ======== Self-tests ========
+    function selfTests(){
+      for(let x=0;x<mapCols;x++){ if(level[0][x]!=='#'||level[mapRows-1][x]!=='#') console.warn('Test: border rows not solid'); }
+      for(let y=0;y<mapRows;y++){ if(level[y][0]!=='#'||level[y][mapCols-1]!=='#') console.warn('Test: border cols not solid'); }
+      const cxt=Math.floor(player.x/tileSize), cyt=Math.floor(player.y/tileSize); if(map[cyt]?.[cxt]) console.warn('Test: player spawned in wall');
+      if(!(numRays>100)) console.warn('Test: unexpected numRays');
+      if(!textures[1]||!textures[2]||!textures[3]) console.warn('Test: textures missing');
+      if(player.hitCooldownMs<200) console.warn('Test: i-frames too short');
+    }
+
+    // ======== Build walls array from level ========
+    (function buildMap(){ parseLevel(); })();
   </script>
 </body>
 </html>
